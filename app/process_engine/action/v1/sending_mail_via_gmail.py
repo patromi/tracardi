@@ -1,59 +1,89 @@
 from tracardi_plugin_sdk.domain.register import Plugin, Spec, MetaData
 from tracardi_plugin_sdk.action_runner import ActionRunner
 from tracardi_plugin_sdk.domain.result import Result
-from sqlalchemy import create_engine
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
-import lxml
 from pydantic import BaseModel
 from typing import Optional
 
-class Configuration(BaseModel):
-    smtp : str
-    port : int
-    username : str
-    password : str
-    to : str
-    From : str
+
+class Smtp(BaseModel):
+    smtp: str
+    port: int
+    username: str
+    password: str
+
+
+class Message(BaseModel):
+    send_to: str
+    send_from: str
     title: Optional[str] = ''
-    replyTo: Optional[str] = None
+    reply_to: Optional[str] = None
     message: Optional[str] = ''
-    @staticmethod
-    def send(config):
-        """Create and configurate message container """
-        message = MIMEMultipart('alternative')
-        message['From'] = config.From
-        message['To'] = config.to
-        message['Subject'] = config.title
-        message.add_header('reply-to', config.replyTo)
 
-        """Cleaning self.message from HTML tags using bs4 """
-        clearmessage = BeautifulSoup(config.message, "lxml").text
 
-        """Creating two parts of message one with HTML tags one without"""
-        part1 = MIMEText(clearmessage, 'plain')
-        part2 = MIMEText(config.message, 'html')
-        message.attach(part1)
-        message.attach(part2)
+class Configuration(BaseModel):
+    server: Smtp
+    message: Message
 
+
+class PostMan:
+
+    def __init__(self, server: Smtp):
+        self.server = server
+
+    def _connect(self) -> smtplib.SMTP:
         """Creating a session with STMP protocol"""
-        session = smtplib.SMTP(config.smtp, config.port)
+        session = smtplib.SMTP(self.server.smtp, self.server.port)
         session.ehlo()
         session.starttls()
 
         """Entering login and password"""
-        session.login(config.username, config.password)
-        session.sendmail(config.From, config.to, message.as_string())
+        session.login(self.server.username, self.server.password)
+
+        return session
+
+    @staticmethod
+    def _prepare_message(message: Message) -> MIMEMultipart:
+        """Create and configure message container """
+        message_container = MIMEMultipart('alternative')
+        message_container['From'] = message.send_from
+        message_container['To'] = message.send_to
+        message_container['Subject'] = message.title
+        message_container.add_header('reply-to', message.reply_to)
+
+        """Cleaning self.message from HTML tags using bs4 """
+        clear_message = BeautifulSoup(message.message, "lxml").text
+
+        """Creating two parts of message one with HTML tags one without"""
+        part1 = MIMEText(clear_message, 'plain')
+        part2 = MIMEText(message.message, 'html')
+        message_container.attach(part1)
+        message_container.attach(part2)
+
+        return message_container
+
+    def send(self, message: Message):
+        session = self._connect()
+        session.sendmail(message.send_from, message.send_to, self._prepare_message(message).as_string())
+        # pytanie czy ta metoda nie zwraca informoacji o tym czy udało się wysłać wiadomość.
+        # Jeżeli tak to taka informacja powinna być zwrócona z tej metody.
         session.quit()
+
+
 class Gmail(ActionRunner):
-    def __init__(self, *args, **kwargs):
-        self.config = kwargs
+    def __init__(self, **kwargs):
         self.config = Configuration(**kwargs)
+        self.post = PostMan(self.config.server)
+
     async def run(self, void):
-            Configuration.send(self.config)
-            return Result(port='session', value='Mail Send!')
+        self.post.send(self.config.message)
+        # PRzydała by sie informacja o tym czy udało się wysłać wiadomość
+        return Result(port='session', value=True)
+
+
 def register() -> Plugin:
     return Plugin(
         start=False,
@@ -62,29 +92,33 @@ def register() -> Plugin:
             className='Gmail',
             inputs=["void"],
             outputs=['session'],
-            init={'smtp': "smtp.gmail.com",
-                  'port': 587,
-                  'username': None,
-                  'password': None,
-                  "to": None,
-                  "from": None,
-                  "replyTo": None,
-                  "title": None,
-                  "message": None
-
-                  },
+            init={
+                'server': {
+                    'smtp': "smtp.gmail.com",
+                    'port': 587,
+                    'username': None,
+                    'password': None
+                },
+                'message': {
+                    "to": None,
+                    "from": None,
+                    "reply_to": None,
+                    "title": None,
+                    "message": None
+                }
+            },
             version='0.1',
             license="MIT",
             author="iLLu"
 
         ),
         metadata=MetaData(
-            name='Send mail via gmail',
-            desc='Send mail via gmail.',
+            name='Send mail',
+            desc='Send mail via defined smtp server.',
             type='flowNode',
-            width=100,
+            width=200,
             height=100,
             icon='start',
-            group=["Gmail"]
+            group=["Connectors"]
         )
     )
